@@ -1,0 +1,46 @@
+[project]
+name = "sanjaya"
+version = "0.1.0"
+description = "Sanjaya — an AI-powered, zero-effort activity journal for Windows."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Devansh Srivastava", email = "devscrest.solutions@gmail.com" }]
+
+# Direct dependency ceiling ~15 (PRD §6). Each justified in README.md.
+dependencies = [
+    "psutil>=5.9",           # pid->exe, process info, self CPU/RAM metrics
+    "fastapi>=0.110",        # localhost API + static SPA host (Phase 3+)
+    "uvicorn>=0.29",         # ASGI server for FastAPI
+    "apscheduler>=3.10",     # nightly summary / rollup / ai_queue drain jobs
+    "openai>=1.30",          # Groq API (OpenAI-compatible base_url)
+    "python-dotenv>=1.0",    # load GROQ_API_KEY / SANJAYA_INGEST_TOKEN from .env
+    "tzdata>=2024.1",        # IANA tz db for zoneinfo on Windows
+    "pystray>=0.19 ; sys_platform == 'win32'",       # featherweight tray icon
+    "Pillow>=10.0 ; sys_platform == 'win32'",         # tray icon image
+    "pywin32>=306 ; sys_platform == 'win32'",         # foreground window, idle, lock events
+    "uiautomation>=2.0 ; sys_platform == 'win32'",    # stopwatch reader (Windows Clock)
+]
+
+[project.optional-dependencies]
+# winsdk (media metadata, PRD §8.6) ships wheels only up to CPython 3.12; on
+# 3.13 it builds from source (needs Visual Studio). It powers a Phase-9 P1
+# feature that degrades to nothing when absent, so it lives behind an extra:
+#   uv sync --extra media   (on a supported Python)
+media = ["winsdk>=1.0.0b10 ; sys_platform == 'win32'"]
+
+[project.scripts]
+sanjaya = "sanjaya.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sanjaya"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

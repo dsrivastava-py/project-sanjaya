@@ -1,0 +1,70 @@
+/* Sanjaya — "Divya Drishti" design system (PRD §4). Tokens verbatim from §4.2. */
+@import "tailwindcss";
+
+:root[data-theme="dark"] {           /* default */
+  --page:        #0A0D19;   /* app background (midnight) */
+  --surface-1:   #121828;   /* cards & chart surface     */
+  --surface-2:   #1A2138;   /* elevated / hover          */
+  --border:      rgba(255,255,255,0.08);
+  --text-1:      #F2F4FA;   /* primary ink               */
+  --text-2:      #A8B0CC;   /* secondary ink             */
+  --text-3:      #6E7691;   /* muted / axis labels       */
+  --grid:        #232A44;   /* hairline gridlines        */
+  --accent:      #E8B44A;   /* divine gold (brand, CTAs, hero) */
+  --accent-2:    #8578E8;   /* violet (secondary brand)  */
+  --focus-ring:  #E8B44A;
+  --idle:        #2A3149;   /* idle/locked — never a colored category (§4.3) */
+}
+:root[data-theme="light"] {
+  --page:        #F6F5F1;
+  --surface-1:   #FBFAF7;
+  --surface-2:   #FFFFFF;
+  --border:      rgba(15,18,35,0.10);
+  --text-1:      #14172A;
+  --text-2:      #4A5068;
+  --text-3:      #7C829B;
+  --grid:        #E5E4DC;
+  --accent:      #A66F0E;   /* gold, stepped dark enough for light surface */
+  --accent-2:    #6E5FD6;
+  --focus-ring:  #A66F0E;
+  --idle:        #D9D8CF;
+}
+
+@theme inline {
+  --color-page:     var(--page);
+  --color-surface1: var(--surface-1);
+  --color-surface2: var(--surface-2);
+  --color-hairline: var(--border);
+  --color-ink1:     var(--text-1);
+  --color-ink2:     var(--text-2);
+  --color-ink3:     var(--text-3);
+  --color-gridline: var(--grid);
+  --color-accent:   var(--accent);
+  --color-accent2:  var(--accent-2);
+  --color-idle:     var(--idle);
+  --font-display: "Space Grotesk", "Inter", system-ui, sans-serif;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+}
+
+html, body, #root { height: 100%; }
+body {
+  background: var(--page);
+  color: var(--text-1);
+  font-family: var(--font-sans);
+  font-size: 15px;                 /* §4.4 body */
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Timers, tabular columns, axis ticks (§4.4) */
+.tnum { font-variant-numeric: tabular-nums; }
+
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+/* Shadows: none in dark (borders do the work), soft ambient in light (§4.4) */
+:root[data-theme="light"] .card {
+  box-shadow: 0 1px 3px rgba(15,18,35,0.05), 0 6px 20px rgba(15,18,35,0.05);
+}
+
+/* Recharts text inherits Inter + ink tokens; never series color (§4.3) */
+.recharts-text { font-family: var(--font-sans); }

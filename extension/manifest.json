@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Sanjaya",
+  "version": "0.1.0",
+  "description": "Feeds active-tab URLs and YouTube state to your local Sanjaya activity journal. Local-only (127.0.0.1); nothing leaves your machine.",
+  "permissions": ["tabs", "alarms"],
+  "host_permissions": ["http://127.0.0.1:8756/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["content/youtube.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

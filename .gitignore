@@ -1,0 +1,27 @@
+# Secrets & user config
+.env
+config.toml
+
+# Local data (DB, logs, exports, ai payload dumps)
+data/
+ALL_CONTEXT/
+PRD.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Frontend / extension build artifacts
+dashboard/node_modules/
+dashboard/dist/
+extension/dist/
+
+.playwright-mcp/
+.claude/settings.local.json
+dashboard/tsconfig.tsbuildinfo
+PHASE*.txt
