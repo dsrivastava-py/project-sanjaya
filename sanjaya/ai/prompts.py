@@ -21,7 +21,23 @@ JSON only: {{"classifications":[{{"i":<index>,"category":"<name>","project":"<na
 Use ONLY these categories: {category_names}.
 Known projects per category: {projects_json}.
 The user's context: {user_context}
-If genuinely ambiguous, pick the most likely category with low confidence."""
+
+Judge each record by what the user was ACTUALLY doing — read the title, domain and
+detail — never by the app alone:
+- Classify web pages and videos by their CONTENT. A YouTube (or any) video's
+  category depends on its video title and channel, NOT on the fact that it is
+  "YouTube". Educational, informative, tutorial, coding, career, documentary, news
+  or skill-building content belongs to the matching work/learning category. Only
+  genuine leisure — music, gaming, comedy, sports, entertainment vlogs — is
+  Entertainment. "20 Skills That Changed My Life" is self-improvement, not
+  Entertainment; a music video is Entertainment.
+- NEVER assign a whole browser (chrome.exe, msedge.exe, brave.exe, ...) or a bare
+  app with no page/title signal to a single category. When a record has no clear
+  content signal, set a LOW confidence (<= 0.4) so a human decides — do not fall
+  back to Entertainment or any default.
+- Use the user's context to disambiguate (agency vs college vs placements vs
+  personal).
+Only give a high confidence (>= 0.8) when the signal is genuinely clear."""
 
 
 def classifier(category_names: list[str], projects_by_category: dict[str, list[str]],

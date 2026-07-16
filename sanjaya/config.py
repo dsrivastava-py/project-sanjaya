@@ -31,7 +31,11 @@ flicker_min_s = 5           # spans shorter than this are merged/dropped
 [server]
 host = "127.0.0.1"          # localhost bind ONLY
 port = 8756
-reconcile_window_s = 3      # extension event within ±this of a sample upgrades the span (§8.8)
+reconcile_window_s = 30     # extension event within ±this of a sample upgrades the span (§8.8).
+                            # Wide because MV3 service workers sleep and Chrome clamps the
+                            # extension's re-post alarm to a ~30-60s floor; a tighter window
+                            # misses most spans. Navigation posts immediately, so a stale URL
+                            # can't outlive a page change.
 app_window = true           # open the dashboard as a chromeless desktop window (Edge/Chrome --app); false = normal browser tab
 
 [ai]

@@ -3,8 +3,8 @@
 // group, bulk select + assign, optional learned rule per assignment.
 import { useMemo, useState } from "react";
 
-import type { Category, ReviewGroup } from "../lib/api";
-import { useAssignReview, useReviewQueue } from "../lib/api";
+import type { AutoSortResult, Category, ReviewGroup } from "../lib/api";
+import { useAssignReview, useAutoSortReview, useReviewQueue, useUndoAutoSort } from "../lib/api";
 import { fmtHM } from "../lib/format";
 import { STATUS, type ThemeName } from "../lib/palette";
 import { CategoryPicker, Field } from "../components/pickers";
@@ -26,7 +26,32 @@ export function Review({
   const [err, setErr] = useState<string | null>(null);
   const queue = useReviewQueue(days);
   const assign = useAssignReview();
+  const autoSort = useAutoSortReview();
+  const undo = useUndoAutoSort();
+  const [sortResult, setSortResult] = useState<AutoSortResult | null>(null);
   const groups = queue.data?.groups ?? [];
+
+  const doUndo = () => {
+    setErr(null);
+    undo.mutate(undefined, {
+      onSuccess: () => setSortResult(null),
+      onError: (e) => setErr(String(e)),
+    });
+  };
+
+  const doAutoSort = () => {
+    setErr(null);
+    autoSort.mutate(
+      { days },
+      {
+        onSuccess: (r) => {
+          setSortResult(r);
+          setSelected(new Set());
+        },
+        onError: (e) => setErr(String(e)),
+      },
+    );
+  };
 
   const selectedIds = useMemo(
     () =>
@@ -79,8 +104,75 @@ export function Review({
               {n}d
             </IconButton>
           ))}
+          <button
+            type="button"
+            onClick={doAutoSort}
+            disabled={autoSort.isPending || groups.length === 0}
+            title="Let Groq classify every group; confident ones are assigned and learned as rules, unsure ones stay for you."
+            className="ml-1 inline-flex items-center gap-1.5 rounded-[10px] bg-accent px-3 py-1.5 text-[13px] font-medium text-surface1 transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            <span aria-hidden>✦</span>
+            {autoSort.isPending ? "Sorting…" : "Auto Sort"}
+          </button>
         </div>
       </header>
+
+      {sortResult && (
+        <Card className="mb-4 border-accent/30">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 text-[16px] text-accent" aria-hidden>✦</span>
+            <div className="min-w-0 flex-1">
+              <p className="text-[14px] text-ink1">
+                Auto Sort assigned{" "}
+                <span className="font-medium text-accent">{sortResult.sorted_groups}</span> group
+                {sortResult.sorted_groups === 1 ? "" : "s"} (
+                {sortResult.sorted_spans} span{sortResult.sorted_spans === 1 ? "" : "s"})
+                {sortResult.remaining_groups > 0 ? (
+                  <> · <span className="text-ink2">{sortResult.remaining_groups} left for you</span></>
+                ) : (
+                  <> · queue clear</>
+                )}
+                .
+              </p>
+              {sortResult.assignments.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {sortResult.assignments.map((a) => (
+                    <span
+                      key={a.key}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-hairline bg-surface2/60 px-2.5 py-1 text-[12px] text-ink2"
+                      title={`${a.count} span${a.count === 1 ? "" : "s"} · ${Math.round(
+                        a.confidence * 100,
+                      )}% confident${a.rule_created ? " · rule created" : ""}`}
+                    >
+                      <span className="truncate max-w-[160px] text-ink1">{a.key}</span>
+                      <span className="text-ink3">→</span>
+                      <span className="text-accent">{a.category}</span>
+                      {a.rule_created && <span className="text-ink3">⟳</span>}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="mt-2 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={doUndo}
+                  disabled={undo.isPending || !sortResult.undo_available}
+                  className="rounded-[8px] border border-hairline px-2.5 py-1 text-[12px] text-ink2 transition-colors hover:bg-surface2 disabled:opacity-50"
+                >
+                  {undo.isPending ? "Undoing…" : "↺ Undo this sort"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSortResult(null)}
+                  className="text-[12px] text-ink3 underline-offset-2 hover:underline"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {queue.isLoading && <Empty>Scanning the queue…</Empty>}
       {queue.isError && (
@@ -98,7 +190,7 @@ export function Review({
       )}
 
       {groups.length > 0 && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_300px]">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_300px]">
           <div className="space-y-2">
             <div className="mb-1 flex items-center gap-3 px-1 text-[12px] text-ink3">
               <input
@@ -185,7 +277,7 @@ function GroupRow({
         <input type="checkbox" checked={checked} onChange={onToggle}
                aria-label={`Select ${g.key}`} />
         <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2">
+          <div className="flex min-w-0 items-baseline gap-2">
             <span className="truncate text-[15px] font-medium text-ink1">{g.key}</span>
             <span className="tnum shrink-0 text-[12px] text-ink3">
               {g.count} span{g.count === 1 ? "" : "s"} · {fmtHM(g.total_s)}

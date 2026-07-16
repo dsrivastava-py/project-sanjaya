@@ -11,7 +11,7 @@ dependencies = [
     "psutil>=5.9",           # pid->exe, process info, self CPU/RAM metrics
     "fastapi>=0.110",        # localhost API + static SPA host (Phase 3+)
     "uvicorn>=0.29",         # ASGI server for FastAPI
-    "apscheduler>=3.10",     # nightly summary / rollup / ai_queue drain jobs
+    "apscheduler>=3.10,<4",  # nightly summary / rollup / ai_queue drain jobs (4.x = new API)
     "openai>=1.30",          # Groq API (OpenAI-compatible base_url)
     "python-dotenv>=1.0",    # load GROQ_API_KEY / SANJAYA_INGEST_TOKEN from .env
     "tzdata>=2024.1",        # IANA tz db for zoneinfo on Windows

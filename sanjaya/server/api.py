@@ -15,8 +15,9 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from .. import __version__, autostart, db as dbmod, export as exportmod, goals as goalsmod, metrics, paths, privacy, reporting
 from .. import env
-from ..ai import jobs
+from ..ai import jobs, prompts
 from ..ai.groq_client import GroqClient, GroqError
+from ..collector import parsers
 from ..timeutil import day_bounds, local_day, now_ts
 
 router = APIRouter(prefix="/api")
@@ -549,7 +550,10 @@ def test_ai(request: Request):
             system='Reply with JSON only: {"ok": true}', user="ping",
             json_mode=True, temperature=0.0,
         )
-        return {"ok": bool((out.get("data") or {}).get("ok")), "total_tokens": out.get("total_tokens", 0)}
+        # Reaching here means the completion round-tripped (any failure raises
+        # GroqError below). That's what "Test connection" verifies — not whether
+        # the small model happened to echo our exact {"ok":true} sentinel.
+        return {"ok": True, "total_tokens": out.get("total_tokens", 0)}
     except GroqError as e:
         return {"ok": False, "detail": str(e)}
     finally:
@@ -820,30 +824,67 @@ def split_span(span_id: int, request: Request, body: dict):
 _REVIEW_CONF = 0.8   # AI classifications below this need human eyes (§8.3)
 
 
-@router.get("/review")
-def get_review(days: int = 30):
+# Sanjaya's own dashboard/app window is not "activity to review" — exclude it
+# every time. Matched narrowly by the localhost dashboard host and the exact app
+# window title, so real sites and PDFs opened in the browser are NOT touched.
+# COALESCE so a NULL column reads as '' (empty) rather than poisoning the whole
+# OR with SQL NULL — otherwise every span lacking a url/domain would be excluded.
+_SELF_EXCLUDE_SQL = (
+    "NOT ("
+    "  COALESCE(domain,'') IN ('127.0.0.1','localhost')"
+    "  OR COALESCE(url,'') LIKE 'http://127.0.0.1:%'"
+    "  OR COALESCE(url,'') LIKE 'http://localhost:%'"
+    "  OR COALESCE(window_title,'') = 'Sanjaya'"
+    "  OR COALESCE(window_title,'') LIKE 'Sanjaya —%'"
+    "  OR COALESCE(window_title,'') LIKE 'Sanjaya - %'"
+    ")"
+)
+
+
+# Content on these domains varies per page/video, so a single blanket "domain ->
+# category" rule would be wrong — classify each item on its own and skip the rule.
+_NO_BLANKET_RULE_DOMAINS = {"youtube.com", "m.youtube.com", "youtu.be"}
+
+
+def _group_key(row) -> str:
+    """Identity a span is grouped under in Review. Normally the domain/exe/app,
+    but YouTube (and similar) is split PER VIDEO so each video is judged by its own
+    title/channel — a coding tutorial and a music video never share a verdict."""
+    domain = row["domain"]
+    if domain and "youtube" in domain.lower():
+        try:
+            d = json.loads(row["detail"]) if row["detail"] else {}
+        except (ValueError, TypeError):
+            d = {}
+        vt = d.get("video_title")
+        if vt:
+            return f"{domain} · {vt}"
+    return domain or row["exe"] or row["app_name"] or "unknown"
+
+
+def _review_groups(conn, days: int) -> tuple[list[dict], int]:
     """Uncategorized + low-confidence spans grouped by identity (domain/exe/app),
-    largest total time first."""
+    largest total time first. Returns (groups, total_span_count). Each group also
+    carries a representative ``detail`` for the AI Auto Sort classifier. Sanjaya's
+    own dashboard/app window is always filtered out (never real sites/PDFs)."""
     days = max(1, min(days, 365))
     cutoff = now_ts() - days * 86400
-    conn = dbmod.connect()
-    try:
-        rows = conn.execute(
-            "SELECT id, start_ts, end_ts, duration_s, kind, exe, app_name, "
-            "window_title, domain, detail, category_id, classified_by, ai_confidence "
-            "FROM spans WHERE start_ts >= ? AND kind NOT IN ('idle','locked','manual') "
-            "AND (category_id IS NULL OR (classified_by='ai' AND ai_confidence < ?)) "
-            "ORDER BY start_ts DESC",
-            (cutoff, _REVIEW_CONF),
-        ).fetchall()
-    finally:
-        conn.close()
+    rows = conn.execute(
+        "SELECT id, start_ts, end_ts, duration_s, kind, exe, app_name, "
+        "window_title, domain, detail, category_id, classified_by, ai_confidence "
+        "FROM spans WHERE start_ts >= ? AND kind NOT IN ('idle','locked','manual') "
+        "AND (category_id IS NULL OR (classified_by='ai' AND ai_confidence < ?)) "
+        f"AND {_SELF_EXCLUDE_SQL} "
+        "ORDER BY start_ts DESC",
+        (cutoff, _REVIEW_CONF),
+    ).fetchall()
     groups: dict[str, dict] = {}
     for r in rows:
-        key = r["domain"] or r["exe"] or r["app_name"] or "unknown"
+        key = _group_key(r)
         g = groups.setdefault(key, {
             "key": key, "domain": r["domain"], "exe": r["exe"], "app_name": r["app_name"],
             "count": 0, "total_s": 0, "span_ids": [], "sample_titles": [], "last_ts": 0,
+            "detail": None,
         })
         g["count"] += 1
         g["total_s"] += r["duration_s"]
@@ -852,8 +893,23 @@ def get_review(days: int = 30):
         title = r["window_title"]
         if title and title not in g["sample_titles"] and len(g["sample_titles"]) < 3:
             g["sample_titles"].append(title)
+        if g["detail"] is None and r["detail"]:
+            g["detail"] = r["detail"]
     out = sorted(groups.values(), key=lambda g: -g["total_s"])
-    return {"days": days, "total_spans": len(rows), "groups": out}
+    return out, len(rows)
+
+
+@router.get("/review")
+def get_review(days: int = 30):
+    """Uncategorized + low-confidence spans grouped by identity (domain/exe/app),
+    largest total time first."""
+    days = max(1, min(days, 365))
+    conn = dbmod.connect()
+    try:
+        groups, total = _review_groups(conn, days)
+    finally:
+        conn.close()
+    return {"days": days, "total_spans": total, "groups": groups}
 
 
 _ASSIGN_MAX = 1000
@@ -912,6 +968,188 @@ def review_assign(request: Request, body: dict):
     finally:
         conn.close()
     return {"updated": len(ids), "rules": rules}
+
+
+_AUTO_SORT_CONF = 0.8   # only groups Groq is at least this sure about get assigned
+
+
+@router.post("/review/auto-sort")
+def review_auto_sort(request: Request, body: dict | None = None):
+    """AI Auto Sort (§10.5): one Groq call classifies every review group; groups
+    it's confident about (>= _AUTO_SORT_CONF) are assigned and get a learned rule
+    (so future spans self-classify), while unsure groups stay in the queue for a
+    human. Uncertain-by-design: this never silently guesses on ambiguous groups."""
+    cfg = request.app.state.cfg
+    body = body or {}
+    if not env.groq_api_key():
+        raise HTTPException(status_code=400,
+                            detail="GROQ_API_KEY not set — add it in Settings → AI to use Auto Sort")
+    try:
+        days = int(body.get("days", 30))
+    except (ValueError, TypeError):
+        days = 30
+
+    conn = dbmod.connect()
+    try:
+        groups, _total = _review_groups(conn, days)
+        if not groups:
+            return {"sorted_groups": 0, "sorted_spans": 0, "groups_total": 0,
+                    "remaining_groups": 0, "assignments": [], "total_tokens": 0}
+
+        cats = jobs._categories(conn)
+        name_to_id = {n: i for i, n in cats}
+        records = [{
+            "i": i,
+            "app_name": g.get("app_name") or g.get("exe"),
+            "kind": None,
+            "title": " · ".join(g.get("sample_titles") or []) or g.get("key"),
+            "domain": g.get("domain"),
+            "detail_compact": jobs._compact_detail(g.get("detail")),
+        } for i, g in enumerate(groups)]
+        system, user = prompts.classifier(
+            [n for _, n in cats], jobs._projects_by_category(conn), records,
+            cfg.get("ai", "user_context", None),
+        )
+        try:
+            out = GroqClient(cfg).complete(
+                conn, kind="auto_sort",
+                model=jobs._model(conn, cfg, "classify_model", "llama-3.1-8b-instant"),
+                system=system, user=user, json_mode=True, temperature=0.2,
+            )
+        except GroqError as e:
+            raise HTTPException(status_code=502, detail=f"Groq classification failed: {e}")
+
+        data = out.get("data") or {}
+        assignments: list[dict] = []
+        sorted_spans = 0
+        lo = hi = None
+        # Undo snapshot: prior state of every touched span + which learned rules
+        # existed before, so /review/undo can reverse exactly this run.
+        pre_rules = {r["id"]: (r["category_id"], r["project_id"]) for r in
+                     conn.execute("SELECT id, category_id, project_id FROM rules WHERE source='learned'")}
+        undo_spans: list[dict] = []
+        touched_rule_ids: list[int] = []
+        for c in (data.get("classifications") or []):
+            idx = c.get("i")
+            if not isinstance(idx, int) or idx < 0 or idx >= len(groups):
+                continue
+            cat_name = c.get("category")
+            conf = float(c.get("confidence") or 0.0)
+            if conf < _AUTO_SORT_CONF or cat_name not in name_to_id:
+                continue
+            g = groups[idx]
+            span_ids = g["span_ids"]
+            cid = name_to_id[cat_name]
+            ph = ",".join("?" for _ in span_ids)
+            rows = conn.execute(
+                f"SELECT * FROM spans WHERE id IN ({ph}) "
+                f"AND (category_id IS NULL OR classified_by='ai')", span_ids,
+            ).fetchall()
+            if not rows:
+                continue
+            undo_spans.extend({
+                "id": r["id"], "category_id": r["category_id"],
+                "classified_by": r["classified_by"], "ai_confidence": r["ai_confidence"],
+            } for r in rows)
+            for r in rows:
+                if r["category_id"] != cid:
+                    _audit(conn, "span", r["id"], "category_id", r["category_id"], cid)
+            ids = [r["id"] for r in rows]
+            iph = ",".join("?" for _ in ids)
+            conn.execute(
+                f"UPDATE spans SET category_id=?, classified_by='ai', ai_confidence=? "
+                f"WHERE id IN ({iph})", (cid, conf, *ids),
+            )
+            # Broad rule from the GROUP identity so future spans self-classify.
+            # Domain groups get a domain rule. A bare exe rule is fine for a
+            # single-purpose app but NEVER for a browser — chrome.exe/msedge.exe
+            # span every category, so a blanket "chrome.exe -> X" rule would
+            # mislabel everything. Those spans are still assigned this once; we
+            # just don't cement a wrong rule.
+            if g.get("domain") and g["domain"].lower() not in _NO_BLANKET_RULE_DOMAINS:
+                ident = {"domain": g["domain"]}
+            elif g.get("exe") and g["exe"].lower() not in parsers.BROWSER_EXES:
+                ident = {"exe": g["exe"]}
+            else:
+                ident = None
+            rule = _learn_rule(conn, request.app.state.rt, ident, cid, None) if ident else None
+            if rule:
+                touched_rule_ids.append(rule["rule_id"])
+            slo = min(r["start_ts"] for r in rows)
+            shi = max(r["end_ts"] for r in rows)
+            lo = slo if lo is None else min(lo, slo)
+            hi = shi if hi is None else max(hi, shi)
+            sorted_spans += len(ids)
+            assignments.append({
+                "key": g["key"], "category": cat_name, "category_id": cid,
+                "confidence": round(conf, 2), "count": len(ids),
+                "rule_created": bool(rule),
+            })
+
+        if assignments:
+            created_rule_ids = [rid for rid in touched_rule_ids if rid not in pre_rules]
+            retargeted = [{"id": rid, "category_id": pre_rules[rid][0],
+                           "project_id": pre_rules[rid][1]}
+                          for rid in touched_rule_ids if rid in pre_rules]
+            dbmod.set_setting(conn, "auto_sort_undo", json.dumps({
+                "ts": now_ts(), "spans": undo_spans,
+                "created_rule_ids": created_rule_ids, "retargeted_rules": retargeted,
+                "lo": lo, "hi": hi,
+            }))
+        if lo is not None:
+            goalsmod.invalidate_progress(conn, cfg, lo, hi)
+    finally:
+        conn.close()
+
+    return {
+        "sorted_groups": len(assignments),
+        "sorted_spans": sorted_spans,
+        "groups_total": len(groups),
+        "remaining_groups": len(groups) - len(assignments),
+        "assignments": assignments,
+        "total_tokens": out.get("total_tokens", 0),
+        "undo_available": bool(assignments),
+    }
+
+
+@router.post("/review/undo")
+def review_undo(request: Request):
+    """Reverse the last Auto Sort run (span assignments + rules it created)."""
+    cfg = request.app.state.cfg
+    conn = dbmod.connect()
+    try:
+        raw = dbmod.get_setting(conn, "auto_sort_undo", None)
+        if not raw:
+            raise HTTPException(status_code=404, detail="nothing to undo")
+        snap = json.loads(raw)
+        # 1. restore each directly-assigned span to its prior state
+        reverted = 0
+        for s in snap.get("spans", []):
+            cur = conn.execute(
+                "UPDATE spans SET category_id=?, classified_by=?, ai_confidence=? WHERE id=?",
+                (s["category_id"], s["classified_by"], s["ai_confidence"], s["id"]),
+            )
+            reverted += cur.rowcount
+        # 2. undo the retro-classification the new rules did to OTHER spans
+        created = snap.get("created_rule_ids", [])
+        if created:
+            ph = ",".join("?" for _ in created)
+            conn.execute(
+                f"UPDATE spans SET category_id=NULL, classified_by=NULL, ai_confidence=NULL, "
+                f"rule_id=NULL WHERE rule_id IN ({ph}) AND classified_by='rule'", created,
+            )
+            conn.execute(f"DELETE FROM rules WHERE id IN ({ph})", created)
+        # 3. restore any pre-existing rule this run had retargeted
+        for r in snap.get("retargeted_rules", []):
+            conn.execute("UPDATE rules SET category_id=?, project_id=? WHERE id=?",
+                         (r["category_id"], r["project_id"], r["id"]))
+        if snap.get("lo") is not None:
+            goalsmod.invalidate_progress(conn, cfg, snap["lo"], snap["hi"])
+        request.app.state.rt.bump_rules()          # collector reloads its engine
+        dbmod.set_setting(conn, "auto_sort_undo", "")
+    finally:
+        conn.close()
+    return {"reverted_spans": reverted, "deleted_rules": len(snap.get("created_rule_ids", []))}
 
 
 # --- goals (§10.4, §10.7; Phase 8) ----------------------------------------------

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import sys
 
-MUTEX_NAME = "Global\\SanjayaSingleton"
+MUTEX_NAME = "Local\\SanjayaSingleton"
 
 
 class SingleInstance:
@@ -14,11 +14,12 @@ class SingleInstance:
         self._handle = None
         self.already_running = False
         if sys.platform == "win32":
+            import win32api
             import win32event
             import winerror
             self._handle = win32event.CreateMutex(None, False, name)
             self.already_running = (
-                win32event.GetLastError() == winerror.ERROR_ALREADY_EXISTS
+                win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS
             )
 
     def release(self) -> None:

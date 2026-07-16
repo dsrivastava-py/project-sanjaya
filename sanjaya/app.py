@@ -8,7 +8,9 @@ collector runs on a supervised background thread that restarts on crash.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import sys
 import threading
 import time
 
@@ -232,17 +234,50 @@ def _make_server(cfg: configmod.Config, state: RuntimeState, controller: "Contro
     app = create_app(cfg, state, controller)
     host = cfg.get("server", "host", "127.0.0.1")
     port = int(cfg.get("server", "port", 8756))
-    uv_cfg = uvicorn.Config(app, host=host, port=port,
+    # log_config=None: skip uvicorn's own dictConfig, which builds a colourized
+    # console formatter by probing sys.stdout.isatty() — that is None under
+    # pythonw.exe (no console) and would crash startup. Our logging is already
+    # set up in log.py; uvicorn just inherits it.
+    uv_cfg = uvicorn.Config(app, host=host, port=port, log_config=None,
                             log_level="warning", access_log=False)
     return uvicorn.Server(uv_cfg)
 
 
 # --- entry -------------------------------------------------------------------
+def _ensure_std_streams() -> None:
+    """Under pythonw.exe (the tray/shortcut launcher) there is no console, so
+    sys.stdout/sys.stderr are None. Any library that probes them — uvicorn's
+    ``isatty`` colour check, a stray ``print`` — then crashes the whole app
+    before the tray appears. Point the missing streams at devnull so startup is
+    identical with or without a console."""
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name, None) is None:
+            setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
+
+
+def _dashboard_alive(host: str, port: int, timeout: float = 0.5) -> bool:
+    """True if something is already serving the dashboard port. Used to tell a
+    genuine running instance from a *stale* single-instance lock (e.g. a prior
+    process that died without releasing its mutex)."""
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def run() -> int:
+    _ensure_std_streams()
     inst = SingleInstance()
     cfg = configmod.load(create=True)
-    if inst.already_running:
-        # Second launch: just open the dashboard and exit (PRD §11).
+    host = cfg.get("server", "host", "127.0.0.1")
+    port = int(cfg.get("server", "port", 8756))
+    if inst.already_running and _dashboard_alive(host, port):
+        # Second launch of a *live* instance: just open its dashboard and exit
+        # (PRD §11). If the lock is held but nothing is serving, the previous
+        # process died badly — fall through and start fresh instead of opening a
+        # dead page.
         Controller(cfg).open_dashboard()
         return 0
 

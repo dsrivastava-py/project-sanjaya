@@ -476,6 +476,62 @@ export function useAssignReview() {
   });
 }
 
+export interface AutoSortAssignment {
+  key: string;
+  category: string;
+  category_id: number;
+  confidence: number;
+  count: number;
+  rule_created: boolean;
+}
+
+export interface AutoSortResult {
+  sorted_groups: number;
+  sorted_spans: number;
+  groups_total: number;
+  remaining_groups: number;
+  assignments: AutoSortAssignment[];
+  total_tokens: number;
+  undo_available: boolean;
+}
+
+export function useAutoSortReview() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { days: number }) =>
+      j<AutoSortResult>("/api/review/auto-sort", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(body),
+      }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["review"] });
+      qc.invalidateQueries({ queryKey: ["day"] });
+      qc.invalidateQueries({ queryKey: ["goals"] });
+      qc.invalidateQueries({ queryKey: ["range"] });
+      qc.invalidateQueries({ queryKey: ["rules"] });
+    },
+  });
+}
+
+export function useUndoAutoSort() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      j<{ reverted_spans: number; deleted_rules: number }>("/api/review/undo", {
+        method: "POST",
+        headers: JSON_HEADERS,
+      }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["review"] });
+      qc.invalidateQueries({ queryKey: ["day"] });
+      qc.invalidateQueries({ queryKey: ["goals"] });
+      qc.invalidateQueries({ queryKey: ["range"] });
+      qc.invalidateQueries({ queryKey: ["rules"] });
+    },
+  });
+}
+
 // --- projects ---------------------------------------------------------------------
 export function useProjects() {
   return useQuery<Project[]>({

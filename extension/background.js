@@ -77,7 +77,10 @@ chrome.windows.onFocusChanged.addListener((wid) => {
 chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg && msg.type === "yt" && sender.tab) {
     ytByTab[sender.tab.id] = msg.data;
-    refresh("yt", false);
+    // Immediate: YouTube fills in title/channel a beat AFTER the page loads, so
+    // this update must POST now — not wait for the slow MV3 alarm, by which time
+    // the span has closed with only the video_id (PRD §8.8).
+    refresh("yt", true);
   }
 });
 chrome.tabs.onRemoved.addListener((tabId) => {

@@ -11,9 +11,11 @@ Zero new dependencies: Edge ships with Windows; Chrome is detected if present.
 """
 from __future__ import annotations
 
+import glob
 import os
 import shutil
 import subprocess
+import sys
 import webbrowser
 
 from .log import get
@@ -29,6 +31,45 @@ _CHROMIUM_CANDIDATES = (
     ("ProgramFiles(x86)", r"Google\Chrome\Application\chrome.exe"),
     ("LOCALAPPDATA", r"Google\Chrome\Application\chrome.exe"),
 )
+
+
+def _find_installed_pwa() -> str | None:
+    """Path to an installed Sanjaya PWA shortcut, if the user has run
+    Edge/Chrome's "Install this site as an app". Such a window carries the app's
+    own gold-eye icon and its own taskbar identity — unlike a plain ``--app``
+    window, which shows the Edge/Chrome logo. We detect it by scanning the Start
+    Menu / Desktop for a ``Sanjaya*.lnk`` whose target is msedge/chrome and whose
+    arguments contain ``--app-id`` (the signature of an installed PWA launcher)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import win32com.client  # provided by pywin32 (already a dependency)
+        shell = win32com.client.Dispatch("WScript.Shell")
+    except Exception as e:  # noqa: BLE001 - COM/pywin32 unavailable → just skip
+        _log.debug("PWA lookup skipped (no WScript.Shell): %s", e)
+        return None
+
+    roots = [
+        os.path.join(os.environ.get("APPDATA", ""),
+                     r"Microsoft\Windows\Start Menu\Programs"),
+        os.path.join(os.environ.get("USERPROFILE", ""), "Desktop"),
+    ]
+    for root in roots:
+        if not root or not os.path.isdir(root):
+            continue
+        for lnk in glob.glob(os.path.join(root, "**", "*.lnk"), recursive=True):
+            if "sanjaya" not in os.path.basename(lnk).lower():
+                continue
+            try:
+                sc = shell.CreateShortcut(lnk)
+                args = sc.Arguments or ""
+                target = (sc.TargetPath or "").lower()
+            except Exception:  # noqa: BLE001 - unreadable shortcut → ignore
+                continue
+            # Distinguish the PWA launcher from Sanjaya's own pythonw shortcut.
+            if "--app-id=" in args and ("msedge" in target or "chrome" in target):
+                return lnk
+    return None
 
 
 def _find_chromium() -> str | None:
@@ -51,6 +92,17 @@ def open_dashboard(url: str, *, app_window: bool = True) -> None:
     default browser. Any failure degrades to :func:`webbrowser.open` — the
     dashboard must always be reachable."""
     if app_window:
+        # Best: an installed PWA — its window shows the gold-eye icon and stands
+        # alone on the taskbar. os.startfile launches the shortcut's own target.
+        pwa = _find_installed_pwa()
+        if pwa is not None:
+            try:
+                os.startfile(pwa)  # type: ignore[attr-defined]  # noqa: S606 (win32 only)
+                _log.info("opened dashboard via installed app: %s", os.path.basename(pwa))
+                return
+            except OSError as e:
+                _log.warning("installed-app launch failed (%s); falling back", e)
+
         browser = _find_chromium()
         if browser:
             # A dedicated user-data-dir keeps the app window isolated from the

@@ -3,21 +3,29 @@
 // it never modifies the page and talks only to the extension's own worker.
 
 (function () {
+  function docTitle() {
+    // Strip the "(N) " unread-count prefix and the " - YouTube" suffix.
+    return document.title
+      .replace(/^\(\d+\)\s*/, "")
+      .replace(/\s*-\s*YouTube$/, "")
+      .trim();
+  }
+
   function ytDetail() {
     const params = new URLSearchParams(location.search);
     const video = document.querySelector("video");
     const channelEl = document.querySelector(
-      "#owner #channel-name a, ytd-channel-name a, #upload-info a"
+      "ytd-video-owner-renderer #channel-name a, #owner #channel-name a, " +
+      "ytd-channel-name a, #upload-info a"
     );
     const titleEl = document.querySelector(
-      "h1.ytd-watch-metadata, h1.title yt-formatted-string"
+      "h1.ytd-watch-metadata yt-formatted-string, h1.ytd-watch-metadata, " +
+      "#title h1 yt-formatted-string, h1.title yt-formatted-string"
     );
+    const dt = docTitle();
     return {
       video_id: params.get("v"),
-      title:
-        (titleEl && titleEl.textContent.trim()) ||
-        document.title.replace(/ - YouTube$/, "").trim() ||
-        null,
+      title: (titleEl && titleEl.textContent.trim()) || dt || null,
       channel: channelEl ? channelEl.textContent.trim() : null,
       playing: video ? !video.paused : null,
       position: video ? Math.floor(video.currentTime) : null,
@@ -38,8 +46,14 @@
     }
   }
 
-  report();
+  // Burst of early re-reads: the title/channel DOM lands a beat after load, so
+  // poll quickly at first to catch it, then settle to a 5s heartbeat.
+  function burst() {
+    report();
+    [800, 2000, 4000].forEach((ms) => setTimeout(report, ms));
+  }
+  burst();
   setInterval(report, 5000);
   // YouTube is an SPA — this fires on in-page navigations between videos.
-  document.addEventListener("yt-navigate-finish", report);
+  document.addEventListener("yt-navigate-finish", burst);
 })();
